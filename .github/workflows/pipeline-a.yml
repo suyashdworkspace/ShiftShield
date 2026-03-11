@@ -1,38 +1,37 @@
-name: Pipeline A - No Scan Baseline 
-on: 
-  workflow_dispatch: 
-    inputs: 
-      run_number: 
-        description: 'Run number (1-30)' 
-        required: true 
-  
-jobs: 
-  build-and-deploy: 
-    runs-on: ubuntu-latest 
-    steps: 
-      - uses: actions/checkout@v3 
-       
-      - name: Record start time 
-        run: echo "START_TIME=$(date +%s)" >> $GITHUB_ENV 
-       
-      - name: Build Docker images 
-        run: | 
-          docker build -t identity-service ./IdentityService 
-          docker build -t product-service ./ProductService 
-          docker build -t order-service ./OrderService 
-          docker build -t notification-service ./NotificationService 
-          docker build -t api-gateway ./ApiGateway 
-       
-      - name: Record end time and duration 
-        run: | 
-          END_TIME=$(date +%s) 
-          DURATION=$((END_TIME - START_TIME)) 
-          echo "Pipeline A Run DOLLAR{{ github.event.inputs.run_number }}: 
-          DOLLARDURATIONs, CVEs_Escaped=4, Scan_Time=0" >> metrics.csv 
-       
-      - name: Upload metrics 
-        uses: actions/upload-artifact@v3 
+name: Pipeline A - No Scan Baseline
+on:
+  workflow_dispatch:
+    inputs:
+      run_number:
+        description: 'Run number (1-30)'
+        required: true
 
-        with: 
-          name: pipeline-a-run-RUN_NUMBER 
-          path: metrics.csv 
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Record start time
+        run: echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Build Docker images
+        run: |
+          docker build -t identity-service ./IdentityService
+          docker build -t product-service ./ProductService
+          docker build -t order-service ./OrderService
+          docker build -t notification-service ./NotificationService
+          docker build -t api-gateway ./ApiGateway
+
+      - name: Calculate Metrics
+        run: |
+          END_TIME=$(date +%s)
+          DURATION=$((END_TIME - START_TIME))
+          echo "Run,Pipeline,Duration_s,Scan_Time_s,CVEs_Detected,CVE_Escape_Rate" > metrics.csv
+          echo "${{ github.event.inputs.run_number }},A,$DURATION,0,0,100%" >> metrics.csv
+
+      - name: Upload metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-a-run-${{ github.event.inputs.run_number }}
+          path: metrics.csv
