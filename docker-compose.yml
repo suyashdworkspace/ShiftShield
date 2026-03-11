@@ -1,0 +1,27 @@
+version: '3.8' 
+services: 
+  identity-service: 
+    build: ./IdentityService 
+    expose: ["80"] 
+   
+  product-service: 
+    build: ./ProductService 
+    expose: ["80"] 
+   
+  order-service: 
+    build: ./OrderService 
+    expose: ["80"] 
+   
+  notification-service: 
+    build: ./NotificationService 
+    expose: ["80"] 
+   
+  api-gateway: 
+    build: ./ApiGateway 
+    ports: 
+      - "5000:80" 
+    depends_on: 
+      - identity-service 
+      - product-service 
+      - order-service 
+      - notification-service 
