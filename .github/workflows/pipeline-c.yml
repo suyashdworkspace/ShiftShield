@@ -1,0 +1,43 @@
+name: Pipeline C - Shift-Right Scanning
+on:
+  workflow_dispatch:
+    inputs:
+      run_number:
+        description: 'Run number (1-30)'
+        required: true
+
+jobs:
+  simulate-shift-right:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Record start time
+        run: echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Build and "Deploy"
+        run: |
+          docker build -t identity-service ./IdentityService
+          # (Simulation: Images are pushed here in a real world scenario)
+          sleep 2 
+
+      - name: Post-Deployment Scan
+        run: |
+          echo "SCAN_START=$(date +%s)" >> $GITHUB_ENV
+          curl -sfL [https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh](https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh) | sh -s -- -b /usr/local/bin
+          trivy image --severity CRITICAL identity-service
+
+      - name: Calculate Metrics
+        run: |
+          SCAN_END=$(date +%s)
+          END_TIME=$(date +%s)
+          SCAN_TIME=$((SCAN_END - SCAN_START))
+          DURATION=$((END_TIME - START_TIME))
+          echo "Run,Pipeline,Duration_s,Scan_Time_s,CVEs_Detected,CVE_Escape_Rate" > metrics.csv
+          echo "${{ github.event.inputs.run_number }},C,$DURATION,$SCAN_TIME,4,100%" >> metrics.csv
+
+      - name: Upload metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-c-run-${{ github.event.inputs.run_number }}
+          path: metrics.csv
