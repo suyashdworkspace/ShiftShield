@@ -1,0 +1,73 @@
+name: Pipeline B - Shift-Left Scanning 
+on: 
+  workflow_dispatch: 
+    inputs: 
+      run_number: 
+        description: 'Run number (1-30)' 
+        required: true 
+  
+jobs: 
+  build-scan-deploy: 
+    runs-on: ubuntu-latest 
+    steps: 
+      - uses: actions/checkout@v3 
+       
+      - name: Record start time 
+        run: echo "START_TIME=$(date +%s)" >> $GITHUB_ENV 
+       
+      - name: Build Docker images 
+        run: | 
+          docker build -t identity-service ./IdentityService 
+          docker build -t product-service ./ProductService 
+          docker build -t order-service ./OrderService 
+          docker build -t notification-service ./NotificationService 
+          docker build -t api-gateway ./ApiGateway 
+       
+      - name: Install Trivy 
+        run: | 
+          curl -sfL 
+          https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | 
+          sh -s -- -b /usr/local/bin 
+       
+      - name: Record scan start 
+        run: echo "SCAN_START=$(date +%s)" >> $GITHUB_ENV 
+       
+      - name: Scan all images with Trivy 
+        run: | 
+          trivy image --severity CRITICAL,HIGH --format json identity-service > 
+          trivy-identity.json 
+          trivy image --severity CRITICAL,HIGH --format json product-service > 
+          trivy-product.json 
+          trivy image --severity CRITICAL,HIGH --format json order-service > 
+          trivy-order.json 
+          trivy image --severity CRITICAL,HIGH --format json notificationservice > 
+          trivy-notification.json 
+          trivy image --severity CRITICAL,HIGH --format json api-gateway > 
+          trivy-gateway.json 
+       
+
+      - name: Count CVEs detected 
+        run: | 
+          CVES=$(cat trivy-*.json | python3 -c " 
+          import json,sys 
+          data = sys.stdin.read() 
+          # Count CRITICAL vulnerabilities across all files 
+          print('COUNT_SCRIPT_PLACEHOLDER') 
+          ") 
+          echo "CVES_DETECTED=DOLLAR{CVES}" >> $GITHUB_ENV 
+       
+      - name: Record scan end and total end 
+        run: | 
+          SCAN_END=$(date +%s) 
+          END_TIME=$(date +%s) 
+          SCAN_TIME=$((SCAN_END - SCAN_START)) 
+          TOTAL_DURATION=$((END_TIME - START_TIME)) 
+          echo "Pipeline B Run RUN_NUMBER: Total=DOLLAR{TOTAL_DURATION}s, Scan=DOLLAR{SCAN_TIME}s" >> metrics.csv 
+       
+      - name: Upload artifacts 
+        uses: actions/upload-artifact@v3 
+        with: 
+          name: pipeline-b-run-RUN_NUMBER 
+          path: | 
+            metrics.csv 
+            trivy-*.json 
