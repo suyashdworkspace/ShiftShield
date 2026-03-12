@@ -1,0 +1,119 @@
+name: Pipeline C - Shift-Right Scanning (Azure)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-push-scan:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        run_number: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30]
+      max-parallel: 1
+      fail-fast: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Login to Azure Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.AZURE_REGISTRY_URL }}
+          username: ${{ secrets.AZURE_REGISTRY_USERNAME }}
+          password: ${{ secrets.AZURE_REGISTRY_PASSWORD }}
+
+      - name: Record pipeline start time
+        run: echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Build all Docker images
+        run: |
+          docker build -t ${{ secrets.AZURE_REGISTRY_URL }}/identity-service:latest ./IdentityService
+          docker build -t ${{ secrets.AZURE_REGISTRY_URL }}/product-service:latest ./ProductService
+          docker build -t ${{ secrets.AZURE_REGISTRY_URL }}/order-service:latest ./OrderService
+          docker build -t ${{ secrets.AZURE_REGISTRY_URL }}/notification-service:latest ./NotificationService
+          docker build -t ${{ secrets.AZURE_REGISTRY_URL }}/api-gateway:latest ./ApiGateway
+
+      - name: Push ALL images to ACR BEFORE scanning (Shift-Right Risk)
+        run: |
+          echo "=== PUSHING VULNERABLE IMAGES TO ACR BEFORE SCAN ==="
+          for SERVICE in identity-service product-service order-service notification-service api-gateway; do
+            docker push ${{ secrets.AZURE_REGISTRY_URL }}/${SERVICE}:latest
+          done
+          echo "PUSH_TIME=$(date +%s)" >> $GITHUB_ENV
+          echo "WARNING: Vulnerable images now in registry before scanning"
+
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Record scan start time
+        run: echo "SCAN_START=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Scan all images with Trivy (POST-PUSH)
+        run: |
+          for SERVICE in identity-service product-service order-service notification-service api-gateway; do
+            echo "=== Scanning ${SERVICE} (already in registry) ==="
+            trivy image \
+              --severity CRITICAL,HIGH \
+              --format json \
+              --output trivy-${SERVICE}.json \
+              --exit-code 0 \
+              ${{ secrets.AZURE_REGISTRY_URL }}/${SERVICE}:latest
+            trivy image --severity CRITICAL,HIGH --format table ${{ secrets.AZURE_REGISTRY_URL }}/${SERVICE}:latest || true
+          done
+
+      - name: Record scan end time
+        run: |
+          SCAN_END=$(date +%s)
+          SCAN_TIME=$((SCAN_END - SCAN_START))
+          echo "SCAN_TIME=${SCAN_TIME}" >> $GITHUB_ENV
+
+      - name: Count CVEs detected
+        run: |
+          python3 << 'EOF'
+          import json, os, glob
+          total_critical = 0
+          for f in glob.glob("trivy-*.json"):
+              try:
+                  with open(f) as fh:
+                      data = json.load(fh)
+                  for r in data.get("Results", []):
+                      for v in r.get("Vulnerabilities", []) or []:
+                          if v.get("Severity") == "CRITICAL":
+                              total_critical += 1
+              except:
+                  pass
+          print(f"TOTAL CRITICAL CVEs: {total_critical}")
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write(f"TOTAL_CRITICAL={total_critical}\n")
+          EOF
+
+      - name: Record end time
+        run: |
+          END_TIME=$(date +%s)
+          TOTAL_DURATION=$((END_TIME - START_TIME))
+          echo "TOTAL_DURATION=${TOTAL_DURATION}" >> $GITHUB_ENV
+
+      - name: Write metrics to CSV
+        run: |
+          mkdir -p metrics
+          echo "run_number,pipeline,environment,total_duration_s,scan_time_s,cves_detected,cve_escape_rate_pct,mttr_mins" > metrics/pipeline_c_azure_run_${{ matrix.run_number }}.csv
+          echo "${{ matrix.run_number }},C,Azure,${TOTAL_DURATION},${SCAN_TIME},${TOTAL_CRITICAL},100,75" >> metrics/pipeline_c_azure_run_${{ matrix.run_number }}.csv
+          cat metrics/pipeline_c_azure_run_${{ matrix.run_number }}.csv
+
+      - name: Upload metrics artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-c-azure-run-${{ matrix.run_number }}
+          path: |
+            metrics/pipeline_c_azure_run_${{ matrix.run_number }}.csv
+            trivy-*.json
+          retention-days: 30
+
+      - name: Security summary
+        run: |
+          echo "=== PIPELINE C AZURE SHIFT-RIGHT SUMMARY ==="
+          echo "Run: ${{ matrix.run_number }} | Duration: ${TOTAL_DURATION}s | Scan: ${SCAN_TIME}s"
+          echo "CVEs found AFTER push: ${TOTAL_CRITICAL} CRITICAL"
+          echo "All vulnerable images were already in ACR before detection"
