@@ -13,7 +13,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Record pipeline start time
         run: echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
@@ -181,7 +181,7 @@ jobs:
           cat metrics/pipeline_c_run_${{ matrix.run_number }}.csv
 
       - name: Upload metrics artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: pipeline-c-run-${{ matrix.run_number }}
           path: |
