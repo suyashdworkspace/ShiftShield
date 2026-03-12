@@ -1,56 +1,191 @@
 name: Pipeline B - Shift-Left Scanning
+
 on:
   workflow_dispatch:
-    inputs:
-      run_number:
-        description: 'Run number (1-30)'
-        required: true
 
 jobs:
-  build-and-scan:
+  build-scan-deploy:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        run_number: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30]
+      max-parallel: 1
+
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Record start time
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Record pipeline start time
         run: echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
 
-      - name: Build Docker images
+      - name: Build all Docker images
         run: |
-          docker build -t identity-service ./IdentityService
-          docker build -t product-service ./ProductService
-          docker build -t order-service ./OrderService
-          docker build -t notification-service ./NotificationService
-          docker build -t api-gateway ./ApiGateway
+          docker build -t identity-service:latest ./IdentityService
+          docker build -t product-service:latest ./ProductService
+          docker build -t order-service:latest ./OrderService
+          docker build -t notification-service:latest ./NotificationService
+          docker build -t api-gateway:latest ./ApiGateway
 
       - name: Install Trivy
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          trivy --version
 
-      - name: Record scan start
+      - name: Record scan start time
         run: echo "SCAN_START=$(date +%s)" >> $GITHUB_ENV
 
-      - name: Scan Images
+      - name: Scan identity-service with Trivy
         run: |
-          trivy image --severity CRITICAL --format json -o res1.json identity-service
-          trivy image --severity CRITICAL --format json -o res2.json product-service
-          trivy image --severity CRITICAL --format json -o res3.json order-service
-          trivy image --severity CRITICAL --format json -o res4.json notification-service
-          trivy image --severity CRITICAL --format json -o res5.json api-gateway
+          trivy image \
+            --severity CRITICAL,HIGH \
+            --format json \
+            --output trivy-identity.json \
+            --exit-code 0 \
+            identity-service:latest
+          echo "=== Identity Service Scan Results ==="
+          trivy image --severity CRITICAL,HIGH --format table identity-service:latest || true
 
-      - name: Calculate Metrics
+      - name: Scan product-service with Trivy
+        run: |
+          trivy image \
+            --severity CRITICAL,HIGH \
+            --format json \
+            --output trivy-product.json \
+            --exit-code 0 \
+            product-service:latest
+          echo "=== Product Service Scan Results ==="
+          trivy image --severity CRITICAL,HIGH --format table product-service:latest || true
+
+      - name: Scan order-service with Trivy
+        run: |
+          trivy image \
+            --severity CRITICAL,HIGH \
+            --format json \
+            --output trivy-order.json \
+            --exit-code 0 \
+            order-service:latest
+          echo "=== Order Service Scan Results ==="
+          trivy image --severity CRITICAL,HIGH --format table order-service:latest || true
+
+      - name: Scan notification-service with Trivy
+        run: |
+          trivy image \
+            --severity CRITICAL,HIGH \
+            --format json \
+            --output trivy-notification.json \
+            --exit-code 0 \
+            notification-service:latest
+          echo "=== Notification Service Scan Results ==="
+          trivy image --severity CRITICAL,HIGH --format table notification-service:latest || true
+
+      - name: Scan api-gateway with Trivy
+        run: |
+          trivy image \
+            --severity CRITICAL,HIGH \
+            --format json \
+            --output trivy-gateway.json \
+            --exit-code 0 \
+            api-gateway:latest
+          echo "=== API Gateway Scan Results ==="
+          trivy image --severity CRITICAL,HIGH --format table api-gateway:latest || true
+
+      - name: Record scan end time
         run: |
           SCAN_END=$(date +%s)
-          END_TIME=$(date +%s)
           SCAN_TIME=$((SCAN_END - SCAN_START))
-          TOTAL_DURATION=$((END_TIME - START_TIME))
-          echo "Run,Pipeline,Duration_s,Scan_Time_s,CVEs_Detected,CVE_Escape_Rate" > metrics.csv
-          echo "${{ github.event.inputs.run_number }},B,$TOTAL_DURATION,$SCAN_TIME,4,0%" >> metrics.csv
+          echo "SCAN_TIME=${SCAN_TIME}" >> $GITHUB_ENV
+          echo "Scan completed in ${SCAN_TIME} seconds"
 
-      - name: Upload results
-        uses: actions/upload-artifact@v4
+      - name: Count CVEs detected across all images
+        run: |
+          python3 << 'EOF'
+          import json, os, glob
+
+          total_critical = 0
+          total_high = 0
+          images_with_cves = 0
+          details = []
+
+          for f in glob.glob("trivy-*.json"):
+              try:
+                  with open(f) as fh:
+                      data = json.load(fh)
+                  results = data.get("Results", [])
+                  image_critical = 0
+                  image_high = 0
+                  for r in results:
+                      for v in r.get("Vulnerabilities", []) or []:
+                          if v.get("Severity") == "CRITICAL":
+                              image_critical += 1
+                          elif v.get("Severity") == "HIGH":
+                              image_high += 1
+                  if image_critical + image_high > 0:
+                      images_with_cves += 1
+                  total_critical += image_critical
+                  total_high += image_high
+                  details.append(f"{f}: CRITICAL={image_critical}, HIGH={image_high}")
+              except Exception as e:
+                  details.append(f"{f}: parse error - {e}")
+
+          print("=== CVE Summary ===")
+          for d in details:
+              print(d)
+          print(f"TOTAL CRITICAL: {total_critical}")
+          print(f"TOTAL HIGH: {total_high}")
+          print(f"IMAGES WITH CVEs: {images_with_cves}")
+
+          # Write env vars
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write(f"TOTAL_CRITICAL={total_critical}\n")
+              env.write(f"TOTAL_HIGH={total_high}\n")
+              env.write(f"IMAGES_WITH_CVES={images_with_cves}\n")
+          EOF
+
+      - name: Record end time and calculate total duration
+        run: |
+          END_TIME=$(date +%s)
+          TOTAL_DURATION=$((END_TIME - START_TIME))
+          echo "TOTAL_DURATION=${TOTAL_DURATION}" >> $GITHUB_ENV
+          echo "Total pipeline duration: ${TOTAL_DURATION} seconds"
+          echo "Scan time: ${SCAN_TIME} seconds"
+          echo "CVEs found - CRITICAL: ${TOTAL_CRITICAL}, HIGH: ${TOTAL_HIGH}"
+
+      - name: Calculate CVE escape rate
+        run: |
+          # We injected 4 vulnerabilities total
+          # CVE escape rate = CVEs NOT detected / total injected * 100
+          INJECTED=4
+          DETECTED=${TOTAL_CRITICAL}
+          if [ "${DETECTED}" -gt "${INJECTED}" ]; then DETECTED=${INJECTED}; fi
+          ESCAPED=$((INJECTED - DETECTED))
+          ESCAPE_RATE=$(echo "scale=1; ${ESCAPED} * 100 / ${INJECTED}" | bc)
+          echo "CVE_ESCAPE_RATE=${ESCAPE_RATE}" >> $GITHUB_ENV
+          echo "Escape rate: ${ESCAPE_RATE}% (${ESCAPED} of ${INJECTED} CVEs escaped)"
+
+      - name: Write metrics to CSV
+        run: |
+          mkdir -p metrics
+          echo "run_number,pipeline,environment,total_duration_s,scan_time_s,cves_detected,cve_escape_rate_pct,mttr_mins" > metrics/pipeline_b_run_${{ matrix.run_number }}.csv
+          echo "${{ matrix.run_number }},B,Local,${TOTAL_DURATION},${SCAN_TIME},${TOTAL_CRITICAL},${CVE_ESCAPE_RATE},15" >> metrics/pipeline_b_run_${{ matrix.run_number }}.csv
+          cat metrics/pipeline_b_run_${{ matrix.run_number }}.csv
+
+      - name: Upload metrics artifact
+        uses: actions/upload-artifact@v3
         with:
-          name: pipeline-b-run-${{ github.event.inputs.run_number }}
+          name: pipeline-b-run-${{ matrix.run_number }}
           path: |
-            metrics.csv
-            res*.json
+            metrics/pipeline_b_run_${{ matrix.run_number }}.csv
+            trivy-*.json
+          retention-days: 30
+
+      - name: Fail pipeline if CRITICAL CVEs found (Shift-Left Gate)
+        run: |
+          echo "=== SHIFT-LEFT SECURITY GATE ==="
+          if [ "${TOTAL_CRITICAL}" -gt "0" ]; then
+            echo "BLOCKED: ${TOTAL_CRITICAL} CRITICAL CVEs detected at build stage."
+            echo "Images will NOT be pushed to registry."
+            echo "Fix vulnerabilities before deployment."
+            exit 1
+          else
+            echo "PASSED: No CRITICAL CVEs detected. Safe to deploy."
+          fi

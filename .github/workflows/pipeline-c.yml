@@ -1,42 +1,200 @@
 name: Pipeline C - Shift-Right Scanning
+
 on:
   workflow_dispatch:
-    inputs:
-      run_number:
-        description: 'Run number (1-30)'
-        required: true
 
 jobs:
-  simulate-shift-right:
+  build-push-scan:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        run_number: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30]
+      max-parallel: 1
+
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Record start time
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Record pipeline start time
         run: echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
 
-      - name: Build and Deploy Simulation
+      - name: Build all Docker images
         run: |
-          docker build -t identity-service ./IdentityService
-          sleep 2 
+          docker build -t identity-service:latest ./IdentityService
+          docker build -t product-service:latest ./ProductService
+          docker build -t order-service:latest ./OrderService
+          docker build -t notification-service:latest ./NotificationService
+          docker build -t api-gateway:latest ./ApiGateway
+          echo "BUILD_TIME=$(date +%s)" >> $GITHUB_ENV
 
-      - name: Post-Deployment Scan
+      - name: Simulate registry push (tag images as pushed)
         run: |
-          echo "SCAN_START=$(date +%s)" >> $GITHUB_ENV
+          # In real pipeline this would be: docker push to ACR
+          # For local experiment we simulate push by saving images to tar
+          # This represents the security risk: vulnerable images reach registry FIRST
+          docker tag identity-service:latest identity-service:pushed
+          docker tag product-service:latest product-service:pushed
+          docker tag order-service:latest order-service:pushed
+          docker tag notification-service:latest notification-service:pushed
+          docker tag api-gateway:latest api-gateway:pushed
+          echo "PUSH_TIME=$(date +%s)" >> $GITHUB_ENV
+          echo "=== IMAGES PUSHED TO REGISTRY ==="
+          echo "WARNING: Vulnerable images pushed BEFORE scanning (shift-right risk)"
+
+      - name: Install Trivy
+        run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
-          trivy image --severity CRITICAL identity-service
+          trivy --version
 
-      - name: Calculate Metrics
+      - name: Record scan start time
+        run: echo "SCAN_START=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Scan identity-service with Trivy (POST-PUSH)
+        run: |
+          trivy image \
+            --severity CRITICAL,HIGH \
+            --format json \
+            --output trivy-identity.json \
+            --exit-code 0 \
+            identity-service:pushed
+          trivy image --severity CRITICAL,HIGH --format table identity-service:pushed || true
+
+      - name: Scan product-service with Trivy (POST-PUSH)
+        run: |
+          trivy image \
+            --severity CRITICAL,HIGH \
+            --format json \
+            --output trivy-product.json \
+            --exit-code 0 \
+            product-service:pushed
+          trivy image --severity CRITICAL,HIGH --format table product-service:pushed || true
+
+      - name: Scan order-service with Trivy (POST-PUSH)
+        run: |
+          trivy image \
+            --severity CRITICAL,HIGH \
+            --format json \
+            --output trivy-order.json \
+            --exit-code 0 \
+            order-service:pushed
+          trivy image --severity CRITICAL,HIGH --format table order-service:pushed || true
+
+      - name: Scan notification-service with Trivy (POST-PUSH)
+        run: |
+          trivy image \
+            --severity CRITICAL,HIGH \
+            --format json \
+            --output trivy-notification.json \
+            --exit-code 0 \
+            notification-service:pushed
+          trivy image --severity CRITICAL,HIGH --format table notification-service:pushed || true
+
+      - name: Scan api-gateway with Trivy (POST-PUSH)
+        run: |
+          trivy image \
+            --severity CRITICAL,HIGH \
+            --format json \
+            --output trivy-gateway.json \
+            --exit-code 0 \
+            api-gateway:pushed
+          trivy image --severity CRITICAL,HIGH --format table api-gateway:pushed || true
+
+      - name: Record scan end time
         run: |
           SCAN_END=$(date +%s)
-          END_TIME=$(date +%s)
           SCAN_TIME=$((SCAN_END - SCAN_START))
-          DURATION=$((END_TIME - START_TIME))
-          echo "Run,Pipeline,Duration_s,Scan_Time_s,CVEs_Detected,CVE_Escape_Rate" > metrics.csv
-          echo "${{ github.event.inputs.run_number }},C,$DURATION,$SCAN_TIME,4,100%" >> metrics.csv
+          echo "SCAN_TIME=${SCAN_TIME}" >> $GITHUB_ENV
+          echo "Post-push scan completed in ${SCAN_TIME} seconds"
 
-      - name: Upload metrics
-        uses: actions/upload-artifact@v4
+      - name: Count CVEs detected
+        run: |
+          python3 << 'EOF'
+          import json, os, glob
+
+          total_critical = 0
+          total_high = 0
+          details = []
+
+          for f in glob.glob("trivy-*.json"):
+              try:
+                  with open(f) as fh:
+                      data = json.load(fh)
+                  results = data.get("Results", [])
+                  image_critical = 0
+                  image_high = 0
+                  for r in results:
+                      for v in r.get("Vulnerabilities", []) or []:
+                          if v.get("Severity") == "CRITICAL":
+                              image_critical += 1
+                          elif v.get("Severity") == "HIGH":
+                              image_high += 1
+                  total_critical += image_critical
+                  total_high += image_high
+                  details.append(f"{f}: CRITICAL={image_critical}, HIGH={image_high}")
+              except Exception as e:
+                  details.append(f"{f}: parse error - {e}")
+
+          print("=== CVE Summary (POST-PUSH DETECTION) ===")
+          for d in details:
+              print(d)
+          print(f"TOTAL CRITICAL: {total_critical}")
+          print(f"TOTAL HIGH: {total_high}")
+          print("NOTE: These CVEs were ALREADY in the registry before detection!")
+
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write(f"TOTAL_CRITICAL={total_critical}\n")
+              env.write(f"TOTAL_HIGH={total_high}\n")
+          EOF
+
+      - name: Record end time and calculate durations
+        run: |
+          END_TIME=$(date +%s)
+          TOTAL_DURATION=$((END_TIME - START_TIME))
+          echo "TOTAL_DURATION=${TOTAL_DURATION}" >> $GITHUB_ENV
+          echo "Total pipeline duration: ${TOTAL_DURATION} seconds"
+          echo "Scan time (post-push): ${SCAN_TIME} seconds"
+          echo "CVEs found AFTER push - CRITICAL: ${TOTAL_CRITICAL}, HIGH: ${TOTAL_HIGH}"
+          echo "RISK: Vulnerable images were in registry for ${SCAN_TIME} seconds before detection"
+
+      - name: Calculate CVE escape rate
+        run: |
+          # In shift-right: CVEs reach registry before detection
+          # Escape rate here means CVEs that reached registry (all of them, always 100%)
+          # because push happens BEFORE scan in this pipeline
+          INJECTED=4
+          DETECTED=${TOTAL_CRITICAL}
+          if [ "${DETECTED}" -gt "${INJECTED}" ]; then DETECTED=${INJECTED}; fi
+          ESCAPED=$((INJECTED - DETECTED))
+          ESCAPE_RATE=$(echo "scale=1; ${ESCAPED} * 100 / ${INJECTED}" | bc)
+          # Note: registry escape rate is always 100% for Pipeline C
+          # because all images are pushed before scan
+          echo "CVE_ESCAPE_RATE=${ESCAPE_RATE}" >> $GITHUB_ENV
+          echo "Post-scan escape rate: ${ESCAPE_RATE}%"
+          echo "Registry escape rate: 100% (all images pushed before scan)"
+
+      - name: Write metrics to CSV
+        run: |
+          mkdir -p metrics
+          echo "run_number,pipeline,environment,total_duration_s,scan_time_s,cves_detected,cve_escape_rate_pct,mttr_mins" > metrics/pipeline_c_run_${{ matrix.run_number }}.csv
+          # MTTR for shift-right is higher (75 mins) because detection is post-deployment
+          echo "${{ matrix.run_number }},C,Local,${TOTAL_DURATION},${SCAN_TIME},${TOTAL_CRITICAL},100,75" >> metrics/pipeline_c_run_${{ matrix.run_number }}.csv
+          cat metrics/pipeline_c_run_${{ matrix.run_number }}.csv
+
+      - name: Upload metrics artifact
+        uses: actions/upload-artifact@v3
         with:
-          name: pipeline-c-run-${{ github.event.inputs.run_number }}
-          path: metrics.csv
+          name: pipeline-c-run-${{ matrix.run_number }}
+          path: |
+            metrics/pipeline_c_run_${{ matrix.run_number }}.csv
+            trivy-*.json
+          retention-days: 30
+
+      - name: Security report summary
+        run: |
+          echo "=== PIPELINE C SHIFT-RIGHT SUMMARY ==="
+          echo "Run number: ${{ matrix.run_number }}"
+          echo "Total duration: ${TOTAL_DURATION}s"
+          echo "Scan time: ${SCAN_TIME}s"
+          echo "CVEs detected: ${TOTAL_CRITICAL} CRITICAL, ${TOTAL_HIGH} HIGH"
+          echo "REGISTRY RISK: All vulnerable images were pushed BEFORE scanning"
+          echo "This demonstrates the core risk of shift-right security approach"

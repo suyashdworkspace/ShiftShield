@@ -1,37 +1,48 @@
 name: Pipeline A - No Scan Baseline
+
 on:
   workflow_dispatch:
-    inputs:
-      run_number:
-        description: 'Run number (1-30)'
-        required: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        run_number: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30]
+      max-parallel: 1
+
     steps:
-      - uses: actions/checkout@v4
-      
+      - name: Checkout code
+        uses: actions/checkout@v3
+
       - name: Record start time
         run: echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
 
-      - name: Build Docker images
+      - name: Build all Docker images
         run: |
-          docker build -t identity-service ./IdentityService
-          docker build -t product-service ./ProductService
-          docker build -t order-service ./OrderService
-          docker build -t notification-service ./NotificationService
-          docker build -t api-gateway ./ApiGateway
+          docker build -t identity-service:latest ./IdentityService
+          docker build -t product-service:latest ./ProductService
+          docker build -t order-service:latest ./OrderService
+          docker build -t notification-service:latest ./NotificationService
+          docker build -t api-gateway:latest ./ApiGateway
 
-      - name: Calculate Metrics
+      - name: Record end time and calculate duration
         run: |
           END_TIME=$(date +%s)
           DURATION=$((END_TIME - START_TIME))
-          echo "Run,Pipeline,Duration_s,Scan_Time_s,CVEs_Detected,CVE_Escape_Rate" > metrics.csv
-          echo "${{ github.event.inputs.run_number }},A,$DURATION,0,0,100%" >> metrics.csv
+          echo "TOTAL_DURATION=${DURATION}" >> $GITHUB_ENV
+          echo "Run ${{ matrix.run_number }} completed in ${DURATION} seconds"
 
-      - name: Upload metrics
-        uses: actions/upload-artifact@v4
+      - name: Write metrics to CSV
+        run: |
+          mkdir -p metrics
+          echo "run_number,pipeline,environment,total_duration_s,scan_time_s,cves_detected,cve_escape_rate_pct,mttr_mins" > metrics/pipeline_a_run_${{ matrix.run_number }}.csv
+          echo "${{ matrix.run_number }},A,Local,${TOTAL_DURATION},0,0,100,NA" >> metrics/pipeline_a_run_${{ matrix.run_number }}.csv
+          cat metrics/pipeline_a_run_${{ matrix.run_number }}.csv
+
+      - name: Upload metrics artifact
+        uses: actions/upload-artifact@v3
         with:
-          name: pipeline-a-run-${{ github.event.inputs.run_number }}
-          path: metrics.csv
+          name: pipeline-a-run-${{ matrix.run_number }}
+          path: metrics/pipeline_a_run_${{ matrix.run_number }}.csv
+          retention-days: 30
